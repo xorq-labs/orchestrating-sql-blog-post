@@ -43,12 +43,21 @@ cities_list = [c.strip() for c in os.getenv(
 ).split("|") if c.strip()]
 
 cities = xo.memtable([(c,) for c in cities_list], schema=schema_in, name="cities")
-w = cities.pipe(weather_udxf)
-expr = w.aggregate(
-    by=[w.city],
-    avg_temp_c=w.temp_c.mean(),
-    readings=w.count(),
-).cache(storage=SourceStorage(source=xo.duckdb.connect("weather.duckdb")))
+
+expr = (
+    cities
+    .pipe(weather_udxf)
+    .aggregate(
+        by=[w.city],
+        avg_temp_c=w.temp_c.mean(),
+        readings=w.count()
+    )
+    .cache(
+        storage=SourceStorage(
+            source=xo.duckdb.connect("weather.duckdb")
+        )
+    )
+)
 
 out = xo.execute(expr)
 print(out.to_string(index=False))

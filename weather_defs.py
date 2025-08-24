@@ -1,4 +1,7 @@
-import os, time, pandas as pd, requests, duckdb
+import os
+import pandas as pd
+import requests
+import duckdb
 from urllib.parse import quote_plus
 from dagster import asset, Definitions, define_asset_job, ScheduleDefinition
 from dagster_dbt import DbtCliResource
@@ -8,7 +11,6 @@ CITIES      = [c.strip() for c in os.getenv(
     "WEATHER_CITIES", "Norfolk,US|New York,US|Chicago,US"
 ).split("|") if c.strip()]
 
-import os, pathlib
 DUCKDB_PATH = os.getenv("DUCKDB_PATH", "weather.duckdb")
 
 
@@ -28,7 +30,6 @@ def weather_now(context):
         })
     df = pd.DataFrame(rows, columns=["city","timestamp","temp_c","weather"])
 
-    os.makedirs(pathlib.Path(DUCKDB_PATH).parent, exist_ok=True)
     con = duckdb.connect(DUCKDB_PATH)
     con.register("df", df)
     con.execute("CREATE SCHEMA IF NOT EXISTS main;")

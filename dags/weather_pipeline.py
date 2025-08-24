@@ -1,7 +1,9 @@
 # dags/weather_pipeline.py
 from airflow.decorators import dag, task
 import pendulum
-import os, sqlite3, requests
+import os
+import sqlite3
+import requests
 from urllib.parse import quote_plus
 
 DB_PATH = os.getenv("DB_PATH", "weather.db")
