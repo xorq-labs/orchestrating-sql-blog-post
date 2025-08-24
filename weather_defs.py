@@ -38,16 +38,16 @@ def weather_now(context):
     context.log.info(f"✅ Wrote main.weather_now rows={n} to {DUCKDB_PATH}")
 
 
+
 @asset(deps=[weather_now], required_resource_keys={"dbt"})
 def build_weather_city_avg(context):
-    # just run dbt; no manifest-bound translation needed
     context.resources.dbt.cli(
         ["build", "--select", "weather_city_avg"]
     ).wait()
 
 
 # 06:09 every Sunday
-job = define_asset_job("weather_job", selection=[build_weather_city_avg])
+job = define_asset_job("weather_job", selection=[weather_now, build_weather_city_avg])
 schedule = ScheduleDefinition(job=job, cron_schedule="9 6 * * 7")
 
 defs = Definitions(
