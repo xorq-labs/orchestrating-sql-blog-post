@@ -1,0 +1,7 @@
+name: dbt_weather
+version: 1.0.0
+profile: duckdb_profile
+
+models:
+  dbt_weather:
+    +materialized: table
