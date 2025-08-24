@@ -57,7 +57,7 @@ def weather_sqlite_wttr():
                     (ds, city, temp_c, weather),
                 )
             except Exception:
-                # keep it tolerant in the "simple days" spirit
+                # FIXME
                 continue
 
         conn.commit()
@@ -96,7 +96,6 @@ def weather_sqlite_wttr():
         conn.commit()
         conn.close()
 
-    # Pass ds via templated args (no get_current_context needed)
     fetch_and_load(ds="{{ ds }}") >> transform(ds="{{ ds }}")
 
 dag = weather_sqlite_wttr()
