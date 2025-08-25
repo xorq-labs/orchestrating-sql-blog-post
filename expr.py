@@ -47,10 +47,15 @@ cities = xo.memtable([(c,) for c in cities_list], schema=schema_in, name="cities
 expr = (
     cities
     .pipe(weather_udxf)
+    .cache(
+        storage = SourceStorage(
+            source =xo.duckdb.connect("staging.db") # FIXME: using duckdb instead of sqlite
+        )
+    )
     .aggregate(
-        by=[w.city],
-        avg_temp_c=w.temp_c.mean(),
-        readings=w.count()
+        by=[xo._.city],
+        avg_temp_c=xo._.temp_c.mean(),
+        readings=xo._.count()
     )
     .cache(
         storage=SourceStorage(
