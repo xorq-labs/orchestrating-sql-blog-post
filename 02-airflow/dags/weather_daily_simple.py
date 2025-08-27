@@ -6,26 +6,32 @@ import sqlite3
 import requests
 from urllib.parse import quote_plus
 
-DB_PATH = os.getenv("DB_PATH", "weather.db")
-CITIES   = os.getenv("WEATHER_CITIES", "Norfolk,US|New York,US|Chicago,US").split("|")
-WTTR_URL = os.getenv("WEATHER_API_URL", "https://wttr.in")
+DB_PATH   = os.getenv("DB_PATH", "weather.db")
+SOURCE_DB = os.getenv("SOURCE_DB", "source.db")
+WTTR_URL  = os.getenv("WEATHER_API_URL", "https://wttr.in")
+
 
 def _ensure_tables(cur):
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS weather_daily(
+    CREATE TABLE IF NOT EXISTS weather_raw(
       dt TEXT NOT NULL,
       city TEXT NOT NULL,
       temp_c REAL,
-      weather TEXT,
+      humidity REAL,
+      cloudcover REAL,
+      precipmm REAL,
       PRIMARY KEY (dt, city)
     );""")
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS weather_city_7d(
+    CREATE TABLE IF NOT EXISTS weather_model(
       dt TEXT NOT NULL,
       city TEXT NOT NULL,
-      avg_temp_c_7d REAL,
-      days INTEGER,
-      dominant_weather TEXT,
+      temp_c REAL,
+      humidity REAL,
+      cloudcover REAL,
+      precipmm REAL,
+      rain_score REAL,
+      predict_rain INTEGER,
       PRIMARY KEY (dt, city)
     );""")
 
@@ -37,13 +43,28 @@ def _ensure_tables(cur):
 )
 def weather_sqlite_wttr():
     @task()
-    def fetch_and_load(ds: str):
+    def fetch_from_source() -> list:
+        """
+        Fetch list of cities from the source database.
+        """
+        conn = sqlite3.connect(SOURCE_DB)
+        cur = conn.cursor()
+        cur.execute("SELECT city, country FROM cities")
+        cities = [f"{city},{country}" for city, country in cur.fetchall()]
+        conn.close()
+        return cities
+
+    @task()
+    def enrich(cities: list, ds: str):
+        """
+        Enrich raw weather data by querying the WTTR API and loading into raw table.
+        """
         os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
         _ensure_tables(cur)
 
-        for city in CITIES:
+        for city in cities:
             url = f"{WTTR_URL}/{quote_plus(city)}?format=j1"
             try:
                 r = requests.get(url, timeout=15)
@@ -51,13 +72,15 @@ def weather_sqlite_wttr():
                     continue
                 j = r.json()
                 temp_c = float(j["current_condition"][0]["temp_C"])
-                weather = j["current_condition"][0]["weatherDesc"][0]["value"]
+                humidity = float(j["current_condition"][0]["humidity"])
+                cloud = float(j["current_condition"][0]["cloudcover"])
+                precip = float(j["current_condition"][0]["precipMM"])
                 cur.execute(
-                    "INSERT OR REPLACE INTO weather_daily(dt,city,temp_c,weather) VALUES (?,?,?,?)",
-                    (ds, city, temp_c, weather),
+                    "INSERT OR REPLACE INTO weather_raw(dt,city,temp_c,humidity,cloudcover,precipmm)"
+                    " VALUES (?,?,?,?,?,?)",
+                    (ds, city, temp_c, humidity, cloud, precip),
                 )
             except Exception:
-                # FIXME
                 continue
 
         conn.commit()
@@ -69,33 +92,30 @@ def weather_sqlite_wttr():
         cur = conn.cursor()
         _ensure_tables(cur)
 
-        cur.execute("DELETE FROM weather_city_7d WHERE dt = ?", (ds,))
+        cur.execute("DELETE FROM weather_model WHERE dt = ?", (ds,))
         cur.execute(
             """
-            INSERT INTO weather_city_7d (dt, city, avg_temp_c_7d, days, dominant_weather)
+            INSERT INTO weather_model(dt,city,temp_c,humidity,cloudcover,precipmm,rain_score,predict_rain)
             SELECT
-              ?            AS dt,
-              w.city       AS city,
-              AVG(w.temp_c) AS avg_temp_c_7d,
-              COUNT(*)      AS days,
-              (
-                SELECT wd.weather
-                FROM weather_daily wd
-                WHERE wd.city = w.city
-                  AND wd.dt BETWEEN date(?,'-6 day') AND date(?)
-                GROUP BY wd.weather
-                ORDER BY COUNT(*) DESC, wd.weather
-                LIMIT 1
-              ) AS dominant_weather
-            FROM weather_daily w
-            WHERE w.dt BETWEEN date(?,'-6 day') AND date(?)
-            GROUP BY w.city;
+              dt,
+              city,
+              temp_c,
+              humidity,
+              cloudcover,
+              precipmm,
+              (humidity*cloudcover)/10000.0        AS rain_score,
+              ((humidity*cloudcover)/10000.0 > 0.5) AS predict_rain
+            FROM weather_raw
+            WHERE dt = ?
             """,
-            (ds, ds, ds, ds, ds),
+            (ds,),
         )
         conn.commit()
         conn.close()
 
-    fetch_and_load(ds="{{ ds }}") >> transform(ds="{{ ds }}")
+    cities = fetch_from_source()
+    enriched = enrich(cities, ds="{{ ds }}")
+    transformed = transform(ds="{{ ds }}")
+    enriched >> transformed
 
 dag = weather_sqlite_wttr()
