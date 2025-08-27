@@ -1,0 +1,13 @@
+{
+  "current_condition": [
+    {
+      "temp_C": "25",
+      "humidity": "50",
+      "cloudcover": "75",
+      "precipMM": "1.20",
+      "weatherDesc": [
+        { "value": "Sunny" }
+      ]
+    }
+  ]
+}

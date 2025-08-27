@@ -1,16 +1,17 @@
 version: 2
 
 sources:
-  - name: main          # arbitrary source name
-    schema: main        # DuckDB's default schema
+  - name: main
+    schema: main
     tables:
-      - name: weather_now
+      - name: weather_staging
 
 models:
-  - name: weather_city_avg
-    description: "Avg temp + count per city from weather_now"
+  - name: weather_predictions
+    description: "a simple weather prediction model"
     columns:
       - name: city
-        tests: [not_null]
-      - name: avg_temp_c
-      - name: readings
+      - name: dt
+      - name: temp_C
+      - name: humidity
+      - name: precipmm

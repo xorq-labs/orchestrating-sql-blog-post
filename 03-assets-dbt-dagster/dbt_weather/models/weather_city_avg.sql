@@ -2,8 +2,10 @@
 
 select
   city,
-  avg(temp_c) as avg_temp_c,
-  count(*)    as readings
-from {{ source('main', 'weather_now') }}
-group by 1
-order by 1
+  temp_c,
+  cloudcover,
+  humidity,
+  (humidity * cloudcover) / 10000.0 AS rain_score,
+  ((humidity * cloudcover) / 10000.0 > 0.5) AS predict_rain
+
+from {{ source('main', 'weather_staging') }}

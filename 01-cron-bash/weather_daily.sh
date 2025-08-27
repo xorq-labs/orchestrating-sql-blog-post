@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
+# Exit on error, undefined variable, or pipe failure.
 set -euo pipefail
+
+# Base WTTR.IN URL, overrideable via WEATHER_API_URL environment variable.
+WTTR_URL="${WEATHER_API_URL:-https://wttr.in}"
 DB="${DB:-weather.db}"
 RUN_DATE="${1:-$(date -u +%F)}"                     # e.g., 2025-08-23
 
@@ -34,7 +38,7 @@ TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 IFS='|' read -r -a CITY_ARR <<< "$CITIES"
 for CITY in "${CITY_ARR[@]}"; do
   # Fetch current conditions from wttr.in and extract required fields
-  data=$(curl -s "https://wttr.in/${CITY// /+}?format=j1")
+  data=$(curl -s "${WTTR_URL}/${CITY// /+}?format=j1")
   temp_c=$(echo "$data" | jq -r '.current_condition[0].temp_C | tonumber')
   humidity=$(echo "$data" | jq -r '.current_condition[0].humidity | tonumber')
   cloud=$(echo "$data" | jq -r '.current_condition[0].cloudcover | tonumber')
