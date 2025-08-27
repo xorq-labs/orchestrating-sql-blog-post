@@ -2,83 +2,86 @@
 set -euo pipefail
 DB="${DB:-weather.db}"
 RUN_DATE="${1:-$(date -u +%F)}"                     # e.g., 2025-08-23
-CITIES="${CITIES:-Norfolk,US|New York,US|Chicago,US}"
+
+# Build CITIES list from source.db (table 'cities' with city,country columns)
+SOURCE_DB="source.db"
+
+# Ensure source DB has a cities table to drive the script
+if ! sqlite3 "$SOURCE_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='cities';" \
+      | grep -q cities; then
+  cat <<EOF >&2
+Error: 'cities' table not found in $SOURCE_DB.
+Please create it, for example:
+  sqlite3 "$SOURCE_DB" <<SQL
+    CREATE TABLE cities(
+      city TEXT NOT NULL,
+      country TEXT NOT NULL,
+      PRIMARY KEY(city,country)
+    );
+    INSERT INTO cities VALUES('Norfolk','US'),('New York','US'),('Chicago','US');
+  SQL
+EOF
+  exit 1
+fi
+
+CITIES="$(sqlite3 "$SOURCE_DB" -noheader \
+  "SELECT city||','||country FROM cities;" \
+  | tr '\n' '|' | sed 's/|$//')"
 
 TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
 
-for CITY in ${CITIES//|/ } ; do
-  curl -s "https://wttr.in/${CITY// /+}?format=j1" \
-  | jq -r --arg d "$RUN_DATE" --arg city "$CITY" \
-      '[ $d, $city, (.current_condition[0].temp_C|tonumber), .current_condition[0].weatherDesc[0].value ] | @csv' \
-  >> "$TMP"
+# Iterate over cities defined in CITIES (pipe-separated), preserving spaces
+IFS='|' read -r -a CITY_ARR <<< "$CITIES"
+for CITY in "${CITY_ARR[@]}"; do
+  # Fetch current conditions from wttr.in and extract required fields
+  data=$(curl -s "https://wttr.in/${CITY// /+}?format=j1")
+  temp_c=$(echo "$data" | jq -r '.current_condition[0].temp_C | tonumber')
+  humidity=$(echo "$data" | jq -r '.current_condition[0].humidity | tonumber')
+  cloud=$(echo "$data" | jq -r '.current_condition[0].cloudcover | tonumber')
+  precip=$(echo "$data" | jq -r '.current_condition[0].precipMM | tonumber')
+  # Emit CSV: date, city, temp, humidity, cloudcover, precip
+  printf '"%s","%s",%.1f,%.1f,%.1f,%.2f\n' \
+    "$RUN_DATE" "$CITY" "$temp_c" "$humidity" "$cloud" "$precip" \
+    >> "$TMP"
 done
 
 sqlite3 "$DB" <<SQL
--- Target tables
-CREATE TABLE IF NOT EXISTS weather_daily(
-  dt     TEXT NOT NULL,
-  city   TEXT NOT NULL,
-  temp_c REAL,
-  weather TEXT,
-  PRIMARY KEY (dt, city)
-);
-
-CREATE TABLE IF NOT EXISTS weather_city_7d(
+-- Create and populate modeled table with rain_score and prediction
+CREATE TABLE IF NOT EXISTS weather_model(
   dt TEXT NOT NULL,
   city TEXT NOT NULL,
-  avg_temp_c_7d REAL,
-  days INTEGER,
-  dominant_weather TEXT,
+  temp_c REAL,
+  humidity REAL,
+  cloudcover REAL,
+  precipmm REAL,
+  rain_score REAL,
+  predict_rain INTEGER,
   PRIMARY KEY (dt, city)
 );
-
--- Staging import
+-- Staging import for this run
 DROP TABLE IF EXISTS _stg_weather;
-CREATE TEMP TABLE _stg_weather(dt TEXT, city TEXT, temp_c REAL, weather TEXT);
+CREATE TEMP TABLE _stg_weather(
+  dt TEXT, city TEXT, temp_c REAL, humidity REAL,
+  cloudcover REAL, precipmm REAL
+);
 .mode csv
 .import $TMP _stg_weather
-
 BEGIN;
-
--- Upsert into daily table (old-SQLite compatible)
-UPDATE weather_daily
-SET temp_c = (SELECT s.temp_c  FROM _stg_weather s WHERE s.dt = weather_daily.dt AND s.city = weather_daily.city),
-    weather = (SELECT s.weather FROM _stg_weather s WHERE s.dt = weather_daily.dt AND s.city = weather_daily.city)
-WHERE EXISTS (SELECT 1 FROM _stg_weather s WHERE s.dt = weather_daily.dt AND s.city = weather_daily.city);
-
-INSERT INTO weather_daily(dt, city, temp_c, weather)
-SELECT s.dt, s.city, s.temp_c, s.weather
-FROM _stg_weather s
-WHERE NOT EXISTS (SELECT 1 FROM weather_daily t WHERE t.dt = s.dt AND t.city = s.city);
+-- Replace any existing rows for this date
+DELETE FROM weather_model WHERE dt = '$RUN_DATE';
+-- Compute rain_score and predict_rain, then load
+INSERT INTO weather_model
+SELECT
+  dt, city, temp_c, humidity, cloudcover, precipmm,
+  (humidity * cloudcover)/10000.0 AS rain_score,
+  ((humidity * cloudcover)/10000.0 > 0.5) AS predict_rain
+FROM _stg_weather;
 COMMIT;
 DROP TABLE _stg_weather;
 SQL
 
-sqlite3 "$DB" <<SQL
--- Transform: rebuild 7-day aggregate for RUN_DATE
-BEGIN;
-DELETE FROM weather_city_7d WHERE dt = '$RUN_DATE';
+echo "loaded $(wc -l < "$TMP") rows into $DB:weather_model for $RUN_DATE"
 
-INSERT INTO weather_city_7d (dt, city, avg_temp_c_7d, days, dominant_weather)
-SELECT
-  '$RUN_DATE' AS dt,
-  w.city,
-  AVG(w.temp_c) AS avg_temp_c_7d,
-  COUNT(*)      AS days,
-  (
-    SELECT wd.weather
-    FROM weather_daily wd
-    WHERE wd.city = w.city
-      AND wd.dt BETWEEN date('$RUN_DATE','-6 day') AND date('$RUN_DATE')
-    GROUP BY wd.weather
-    ORDER BY COUNT(*) DESC, wd.weather
-    LIMIT 1
-  ) AS dominant_weather
-FROM weather_daily w
-WHERE w.dt BETWEEN date('$RUN_DATE','-6 day') AND date('$RUN_DATE')
-GROUP BY w.city;
-COMMIT;
-
-SQL
-
-echo "loaded \$(wc -l < "$TMP") rows into $DB:weather_daily and rebuilt $DB:weather_city_7d for $RUN_DATE"
+echo
+echo "=== weather_model for $RUN_DATE ==="
+sqlite3 -header -column "$DB" "SELECT * FROM weather_model WHERE dt = '$RUN_DATE';"
